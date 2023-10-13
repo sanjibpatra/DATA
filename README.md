@@ -1,2 +1,2 @@
-# DATA
+# OCT image data
  
