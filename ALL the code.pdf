@@ -1,0 +1,299 @@
+!pip install keract
+!pip install tensorflow
+!pip install pydot
+
+!pip install seaborn
+!pip install scikit-image
+
+import os
+from glob import glob
+import pandas as pd
+import numpy as np
+from numpy import expand_dims
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+import seaborn as sn
+from skimage.transform import resize
+from skimage.color import gray2rgb
+from sklearn.metrics import classification_report, confusion_matrix
+from IPython.display import SVG
+import keract
+from tensorflow import keras
+from tensorflow.keras import applications, optimizers
+from tensorflow.keras.models import Model, Sequential, load_model
+from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
+from tensorflow.keras.layers import Dense, Flatten, Dropout
+from tensorflow.keras.applications.vgg16 import VGG16, preprocess_input
+from tensorflow.keras.utils import to_categorical, model_to_dot, plot_model
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, CSVLogger, ReduceLROnPlateau
+
+# Importing Dataset and Data Pre-Processing
+
+data_dir = "/kaggle/input/medical-image-data"
+train_data_dir = "/kaggle/input/medical-image-data/train"
+val_data_dir = "/kaggle/input/medical-image-data/validation"
+test_data_dir = "/kaggle/input/medical-image-data/test"
+img_width, img_height = 150, 150 
+channels = 3
+batch_size = 32
+train_data_dir
+
+cnv_images = len(glob(train_data_dir + '/CNV/*.jpeg'))
+dme_images = len(glob(train_data_dir + '/DME/*.jpeg'))
+drusen_images = len(glob(train_data_dir + '/DRUSEN/*.jpeg'))
+normal_images = len(glob(train_data_dir + '/NORMAL/*.jpeg'))
+data= {'CNV': cnv_images, 'DME': dme_images, 'DRUSEN': drusen_images, 'NORMAL': normal_images}
+labels = list(data.keys()) 
+count = list(data.values()) 
+
+plt.rcParams['figure.figsize'] = (8.0, 8.0)
+plt.bar(labels, count, color=['tab:red', 'tab:green', 'tab:blue', 'tab:orange'])
+plt.axis('on')
+plt.xlabel("Labels") 
+plt.ylabel("Count") 
+plt.savefig('labels_vs_counts.png', transparent= False, bbox_inches= 'tight', dpi= 400)
+plt.show() 
+
+# Image Histogram (Tonal Distribution)
+
+# Histogram of a normal retina image in the train dataset:
+
+image = mpimg.imread(data_dir + '/train/NORMAL/NORMAL-9863816-1.jpeg')
+color_img= gray2rgb(resize(image, (128, 128)))
+plt.rcParams['figure.figsize'] = (8.0, 5.0)
+_ = plt.hist(color_img.ravel(), bins = 256, color = 'orange', )
+_ = plt.hist(color_img[:, :, 0].ravel(), bins = 256, color = 'red', alpha = 0.5)
+_ = plt.hist(color_img[:, :, 1].ravel(), bins = 256, color = 'Green', alpha = 0.5)
+_ = plt.hist(color_img[:, :, 2].ravel(), bins = 256, color = 'Blue', alpha = 0.5)
+_ = plt.xlabel('Intensity Value')
+_ = plt.ylabel('Count')
+_ = plt.legend(['Total', 'Red_Channel', 'Green_Channel', 'Blue_Channel'])
+plt.savefig('histogram.png', transparent= False, bbox_inches= 'tight', dpi= 400)
+plt.show()
+
+# Sample Images from the Dataset
+
+print("Normal")
+multipleImages = glob(data_dir + '/train/NORMAL/**')
+i = 0
+plt.rcParams['figure.figsize'] = (10.0, 10.0)
+plt.subplots_adjust(wspace=0, hspace=0)
+for im in multipleImages[:25]:
+    image = mpimg.imread(im)
+    image_resized = resize(image, (128, 128)) 
+    plt.subplot(5, 5, i+1) #.set_title(l)
+    plt.imshow(gray2rgb(image_resized)); plt.axis('off')
+    i += 1
+plt.savefig('normal_eye.png', transparent= False, bbox_inches= 'tight', dpi= 400)
+
+print("Choroidal Neo-Vascularization (CNV)")
+multipleImages = glob(data_dir + '/train/CNV/**')
+i = 0
+plt.rcParams['figure.figsize'] = (10.0, 10.0)
+plt.subplots_adjust(wspace=0, hspace=0)
+for im in multipleImages[:25]:
+    image = mpimg.imread(im)
+    image_resized = resize(image, (128, 128)) 
+    plt.subplot(5, 5, i+1) #.set_title(l)
+    plt.imshow(gray2rgb(image_resized)); plt.axis('off')
+    i += 1
+plt.savefig('cnv_eye.png', transparent= False, bbox_inches= 'tight', dpi= 400)
+
+print("Diabetic Macular Edema (DME)") 
+multipleImages = glob(data_dir + '/train/DME/**')
+i = 0
+plt.rcParams['figure.figsize'] = (10.0, 10.0)
+plt.subplots_adjust(wspace=0, hspace=0)
+for im in multipleImages[:25]:
+    image = mpimg.imread(im)
+    image_resized = resize(image, (128, 128)) 
+    plt.subplot(5, 5, i+1) #.set_title(l)
+    plt.imshow(gray2rgb(image_resized)); plt.axis('off')
+    i += 1
+plt.savefig('dme_eye.png', transparent= False, bbox_inches= 'tight', dpi= 400)
+
+print("Drusen")
+multipleImages = glob(data_dir + '/train/DRUSEN/**')
+i = 0
+plt.rcParams['figure.figsize'] = (10.0, 10.0)
+plt.subplots_adjust(wspace=0, hspace=0)
+for im in multipleImages[:25]:
+    image = mpimg.imread(im)
+    image_resized = resize(image, (128, 128)) 
+    plt.subplot(5, 5, i+1) #.set_title(l)
+    plt.imshow(gray2rgb(image_resized)); plt.axis('off')
+    i += 1
+plt.savefig('drusen_eye.png', transparent= False, bbox_inches= 'tight', dpi= 400)
+
+# Keras Data Generators
+
+train_datagen = ImageDataGenerator(
+    rescale= 1./255,
+    zoom_range= (0.73, 0.9),
+    horizontal_flip= True,
+    rotation_range= 10,
+    width_shift_range= 0.10,
+    fill_mode= 'constant',
+    height_shift_range= 0.10,   
+    brightness_range= (0.55, 0.9),
+)
+
+valid_test_datagen = ImageDataGenerator(
+    rescale= 1./255, 
+)
+
+train_generator = train_datagen.flow_from_directory(  
+    train_data_dir,  
+    target_size= (img_width, img_height), 
+    color_mode= 'rgb',
+    batch_size= batch_size,  
+    class_mode= 'categorical',
+    shuffle= True, 
+    seed= 1337
+) 
+
+valid_generator = valid_test_datagen.flow_from_directory(
+    val_data_dir,
+    target_size= (img_width, img_height),
+    color_mode= 'rgb',
+    batch_size= batch_size,  
+    class_mode= 'categorical',
+    shuffle= True, 
+    seed= 1337
+)
+
+test_generator = valid_test_datagen.flow_from_directory(  
+    test_data_dir,  
+    target_size= (img_width, img_height), 
+    color_mode= 'rgb',
+    batch_size= batch_size,        
+    class_mode= 'categorical',
+    shuffle= False, 
+    
+)
+
+num_classes = len(train_generator.class_indices)  
+train_labels = train_generator.classes 
+train_labels = to_categorical(train_labels, num_classes=num_classes)
+valid_labels = valid_generator.classes 
+valid_labels = to_categorical(valid_labels, num_classes=num_classes)
+nb_train_samples = len(train_generator.filenames)  
+nb_valid_samples = len(valid_generator.filenames)
+nb_test_samples = len(test_generator.filenames)
+
+# Image Data Augmentation
+
+img = load_img("/kaggle/input/medical-image-data/train/NORMAL/NORMAL-1014715-9.jpeg")
+data = img_to_array(img)
+samples = expand_dims(data, 0)
+it = train_datagen.flow(samples, batch_size=1)
+plt.rcParams['figure.figsize'] = (8.0, 8.0)
+
+for i in range(9):
+	plt.subplot(330 + 1 + i)
+	batch = it.next()
+	image = batch[0]
+	plt.imshow(image)
+
+plt.savefig('augmented_image.png', transparent= False, bbox_inches= 'tight', dpi= 400)
+plt.show()
+
+# Model
+
+# VGG16 CNN architecture is used for classification.
+# Pretrained on the 'ImageNet' dataset.
+
+import tensorflow as tf
+
+# Detect and initialize the TPU
+tpu = tf.distribute.cluster_resolver.TPUClusterResolver.connect()
+
+# Instantiate a distribution strategy
+tpu_strategy = tf.distribute.experimental.TPUStrategy(tpu)
+vgg16 = tf.keras.applications.VGG16(include_top=False, weights='imagenet', input_shape=(img_width, img_height, channels))
+vgg16.summary()
+
+model = tf.keras.Sequential()
+for layer in vgg16.layers:
+    model.add(layer)
+
+for layer in model.layers:
+    layer.trainable= False
+
+model.add(tf.keras.layers.Flatten())
+model.add(tf.keras.layers.Dropout(0.2))
+model.add(tf.keras.layers.Dense(4, activation='softmax'))
+
+model.summary()
+
+# VGG16 Architecture
+
+from tensorflow.keras.utils import plot_model
+import pydot
+plot_model(model,to_file='/kaggle/input/model-plot', show_shapes=True, show_layer_names=True)
+from IPython.display import Image
+Image('/kaggle/input/model-plot/model_plot.png')
+
+# Baseline Model Training
+
+model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001),loss=tf.keras.losses.CategoricalCrossentropy(),metrics=['accuracy'] )
+
+# Define a TPU-compatible ModelCheckpoint callback
+checkpoint = tf.keras.callbacks.ModelCheckpoint(
+    'baseline_model.h5',
+    monitor='val_loss',
+    verbose=1,
+    save_best_only=True,
+    mode='auto',
+    save_weights_only=False,
+    save_freq='epoch'
+)
+
+# Define other callbacks (EarlyStopping, CSVLogger, ReduceLROnPlateau)
+earlystop = tf.keras.callbacks.EarlyStopping(
+    monitor='val_loss',
+    min_delta=0.001,
+    patience=3,
+    verbose=1,
+    mode='auto'
+)
+
+csvlogger = tf.keras.callbacks.CSVLogger(
+    filename="baseline_training_csv.log",
+    separator=",",
+    append=False
+)
+
+reduceLR = tf.keras.callbacks.ReduceLROnPlateau(
+    monitor='val_loss',
+    factor=0.1,
+    patience=3,
+    verbose=1,
+    mode='auto'
+)
+
+# Combine all callbacks
+callbacks = [checkpoint, earlystop, csvlogger, reduceLR]
+
+# Define the training parameters
+epochs = 30
+steps_per_epoch = nb_train_samples // batch_size
+validation_steps = nb_valid_samples // batch_size
+
+# Train the model on the TPU
+history = model.fit(
+    train_generator,
+    epochs=epochs,
+    steps_per_epoch=steps_per_epoch,
+    validation_data=valid_generator,
+    validation_steps=validation_steps,
+    verbose=2,
+    callbacks=callbacks,
+    shuffle=True
+)
+     
+
+(eval_loss, eval_accuracy) = model.evaluate(test_generator, batch_size= batch_size, verbose= 1)
+print('Test Loss: ', eval_loss)
+print('Test Accuracy: ', eval_accuracy)
